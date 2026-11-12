@@ -18,6 +18,9 @@ type Options struct {
 	// object, instead of only the metadata parameter as a string.
 	MetadataObject bool
 
+	// PrivateLogs emits only predefined report categories and modes.
+	PrivateLogs bool
+
 	Logger  *slog.Logger
 	Metrics *metrics.Metrics
 }

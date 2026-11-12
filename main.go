@@ -36,6 +36,9 @@ var (
 	// was created at.
 	Rev = "dev"
 
+	// The pilot Dockerfile selects the restricted deployment profile at build time.
+	deploymentProfile = ""
+
 	// defaultFilterList is the built-in blocked URI filter list. It's
 	// embedded from the sample file so that the file people copy for
 	// --filter-file is always the list the collector actually uses.
@@ -105,6 +108,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		info, _ := debug.ReadBuildInfo()
 		_, err := fmt.Fprintf(stdout, "csp-collector (%s)\n", buildVersion(Rev, info))
 		return err
+	}
+
+	vibenest := deploymentProfile == "vibenest"
+	if vibenest {
+		if *listenPort != 8080 || *metricsPort != 9090 || *metricsBindAddr != "127.0.0.1" || *healthCheckPath != defaultHealthCheckPath {
+			err := errors.New("the VibeNest profile requires port 8080, loopback metrics on 9090 and the default health path")
+			fmt.Fprintln(stderr, err)
+			return err
+		}
+		*endpoints = "csp,reporting-api-csp,nel"
+		*debugFlag = false
 	}
 
 	level := slog.LevelInfo
@@ -182,6 +196,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		clientIP = handler.ClientIPTruncated
 	}
 
+	reportLogger := logger
+	if vibenest {
+		reportLogger = slog.New(newLogHandler(&reportLogBudget{output: stdout}, "json", slog.LevelInfo))
+	}
+
 	registry := prometheus.NewRegistry()
 	r := newRouter(routerConfig{
 		healthCheckPath: *healthCheckPath,
@@ -191,7 +210,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			TruncateQueryStringFragment: *truncateQueryStringFragment,
 			ClientIP:                    clientIP,
 			MetadataObject:              *metadataObject,
-			Logger:                      logger,
+			PrivateLogs:                 vibenest,
+			Logger:                      reportLogger,
 			Metrics:                     metrics.New(registry),
 		},
 	})
@@ -231,7 +251,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	errs := make(chan error, 2)
 	go func() { errs <- serve(ctx, newServer(metricsMux), metricsLn) }()
-	go func() { errs <- serve(ctx, newServer(r), ln) }()
+	reports := newServer(r)
+	if vibenest {
+		r.HandleFunc("GET /{$}", handler.HealthcheckHandler)
+		configureVibeNestServer(reports)
+		ln = &reportListener{Listener: ln, inFlight: make(chan struct{}, reportConnections)}
+	}
+	go func() { errs <- serve(ctx, reports, ln) }()
 
 	var failed error
 	for range 2 {

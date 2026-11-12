@@ -16,6 +16,8 @@ import (
 // limits keep to roughly 32KB, so a real batch stays near 3MB at most.
 const maxBodyBytes = 5 << 20
 
+const privateBatchSize = 100
+
 // ReportTyped lets the handler check a decoded item's Reporting API `type`
 // without type-specific code.
 type ReportTyped interface {
@@ -139,15 +141,18 @@ func (h *BatchReportHandler[T]) ServeHTTP(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		h.Metrics.ReportErrors.WithLabelValues(h.HandlerName, "decode_error").Inc()
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		h.Logger.Debug("unable to decode invalid JSON payload", "error", err)
+		if !h.PrivateLogs {
+			h.Logger.Debug("unable to decode invalid JSON payload", "error", err)
+		}
 		return
 	}
 
-	metadata := h.metadata(r)
-	clientIP := h.clientIP(r)
-	requestAttrs := []slog.Attr{slog.Any("metadata", metadata), slog.String("path", r.URL.Path)}
-	if clientIP != "" {
-		requestAttrs = append(requestAttrs, slog.String("client_ip", clientIP))
+	var requestAttrs []slog.Attr
+	if !h.PrivateLogs {
+		requestAttrs = []slog.Attr{slog.Any("metadata", h.metadata(r)), slog.String("path", r.URL.Path)}
+		if clientIP := h.clientIP(r); clientIP != "" {
+			requestAttrs = append(requestAttrs, slog.String("client_ip", clientIP))
+		}
 	}
 
 	for _, item := range items {
@@ -163,9 +168,15 @@ func (h *BatchReportHandler[T]) ServeHTTP(w http.ResponseWriter, r *http.Request
 				} else {
 					h.Metrics.ReportErrors.WithLabelValues(h.HandlerName, rej.Reason).Inc()
 				}
-				h.Logger.Debug("received invalid payload", "error", rej.Err)
+				if !h.PrivateLogs {
+					h.Logger.Debug("received invalid payload", "error", rej.Err)
+				}
 				if h.SingleObject {
-					http.Error(w, rej.Err.Error(), http.StatusBadRequest)
+					if h.PrivateLogs {
+						w.WriteHeader(http.StatusBadRequest)
+					} else {
+						http.Error(w, rej.Err.Error(), http.StatusBadRequest)
+					}
 					return
 				}
 				continue
@@ -173,7 +184,11 @@ func (h *BatchReportHandler[T]) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 
 		result := h.Process(item)
-		h.Logger.LogAttrs(r.Context(), slog.LevelInfo, "", result.attrs(requestAttrs)...)
+		if h.PrivateLogs {
+			h.Logger.LogAttrs(r.Context(), slog.LevelInfo, "browser report accepted", privateReportAttrs(h.HandlerName, result)...)
+		} else {
+			h.Logger.LogAttrs(r.Context(), slog.LevelInfo, "", result.attrs(requestAttrs)...)
+		}
 		if h.RecordSuccessMetric != nil {
 			h.RecordSuccessMetric(result.Mode)
 		} else {
@@ -215,18 +230,23 @@ func (h *BatchReportHandler[T]) decode(body io.Reader, r *http.Request) ([]T, er
 
 	var items []T
 	var raw json.RawMessage
-	for dec.More() {
+	for count := 0; dec.More(); count++ {
+		if h.PrivateLogs && count == privateBatchSize {
+			return nil, errors.New("too many reports in batch")
+		}
 		if err := dec.Decode(&raw); err != nil {
 			return nil, err
 		}
 		var item T
 		if err := json.Unmarshal(raw, &item); err != nil {
 			h.Metrics.ReportErrors.WithLabelValues(h.HandlerName, "item_decode_error").Inc()
-			h.Logger.Debug("skipping a report that couldn't be decoded",
-				"reason", "item_decode_error",
-				"body", string(raw),
-				"path", r.URL.Path,
-			)
+			if !h.PrivateLogs {
+				h.Logger.Debug("skipping a report that couldn't be decoded",
+					"reason", "item_decode_error",
+					"body", string(raw),
+					"path", r.URL.Path,
+				)
+			}
 			continue
 		}
 		items = append(items, item)

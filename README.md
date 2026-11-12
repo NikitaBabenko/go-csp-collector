@@ -19,6 +19,14 @@ extensions, out of the box. The [default list][1] shows what's ignored.
 | [COEP](#coep)        | `Cross-Origin-Embedder-Policy` (and `-Report-Only`)          | `/reporting-api/coep`                              |
 | [Anything else](#default-reporting-api-endpoint) | `Reporting-Endpoints` with a `default` endpoint | `/reporting-api/default`                  |
 
+## VibeNest pilot
+
+<a href="https://vibenest.net/deploy?repo=https%3A%2F%2Fgithub.com%2FNikitaBabenko%2Fgo-csp-collector&amp;branch=codex%2Fvibenest-pilot"><img src="https://vibenest.net/deploy-to-vibenest.svg" alt="Deploy to VibeNest"></a>
+
+**NOT_READY** · Free-tier deployment and browser report delivery are pending.
+The button opens VibeNest with this fork and branch selected. See the
+[pilot instructions](VIBENEST.md) for configuration, privacy and log limits.
+
 ## Quick start
 
 Run the collector from Docker Hub:
@@ -50,7 +58,7 @@ Reports show up on the collector's stdout as they arrive.
 To build it yourself:
 
 ```sh
-go build -o csp_collector main.go
+go build -o csp_collector .
 ./csp_collector
 ```
 
